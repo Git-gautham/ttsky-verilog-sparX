@@ -1,70 +1,90 @@
 /*
- * Copyright (c) 2024 Your Name
+ * Copyright (c) 2026 Your Name
  * SPDX-License-Identifier: Apache-2.0
  */
 
 `default_nettype none
 
-module tt_um_adaptive_clock_4mux (
+module tt_um_prog_clk_router (
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output wire [7:0] uio_out,  // IOs: Output path
-    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // always 1 when the design is powered, so you can ignore it
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
+    input  wire [7:0] uio_in,   // IOs (unused)
+    output wire [7:0] uio_out,  // IOs (unused)
+    output wire [7:0] uio_oe,   // IOs (unused)
+    input  wire       ena,      // always 1 (ignore)
+    input  wire       clk,      // system clock
+    input  wire       rst_n     // active-low reset
 );
 
-  // Active-low reset → convert to active-high
+    //--------------------------------------------------
+    // Reset conversion
+    //--------------------------------------------------
     wire rst = ~rst_n;
 
-    // Select lines mapping from inputs
-    wire [1:0] sel1 = ui_in[1:0];
-    wire [1:0] sel2 = ui_in[3:2];
-    wire [1:0] sel3 = ui_in[5:4];
-    wire [1:0] sel4 = ui_in[7:6];
+    //--------------------------------------------------
+    // Input decoding (same as your design)
+    //--------------------------------------------------
+    wire [2:0] addr  = ui_in[2:0];
+    wire [3:0] data  = ui_in[6:3];
+    wire       wr_en = ui_in[7];
 
-    // Counter
-    reg [3:0] count;
+    //--------------------------------------------------
+    // 1. 16-bit Master Counter
+    //--------------------------------------------------
+    reg [15:0] counter;
 
     always @(posedge clk or posedge rst) begin
         if (rst)
-            count <= 4'b0000;
+            counter <= 16'd0;
         else
-            count <= count + 1;
+            counter <= counter + 1;
     end
 
-    // Clock divisions
-    wire clk_div2  = count[0];
-    wire clk_div4  = count[1];
-    wire clk_div8  = count[2];
-    wire clk_div16 = count[3];
+    //--------------------------------------------------
+    // 2. Write Edge Detection
+    //--------------------------------------------------
+    reg wr_en_d;
 
-    // MUX function
-    function mux4;
-        input [1:0] sel;
-        input d0, d1, d2, d3;
-        begin
-            case(sel)
-                2'b00: mux4 = d0;
-                2'b01: mux4 = d1;
-                2'b10: mux4 = d2;
-                2'b11: mux4 = d3;
-            endcase
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            wr_en_d <= 1'b0;
+        else
+            wr_en_d <= wr_en;
+    end
+
+    wire wr_pulse = wr_en & ~wr_en_d;
+
+    //--------------------------------------------------
+    // 3. 8x4 Register File
+    //--------------------------------------------------
+    reg [3:0] config_reg [7:0];
+
+    integer i;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            for (i = 0; i < 8; i = i + 1)
+                config_reg[i] <= i;  // default mapping
         end
-    endfunction
+        else if (wr_pulse) begin
+            config_reg[addr] <= data;
+        end
+    end
 
-    // Outputs mapped to uo_out
-    assign uo_out[0] = mux4(sel1, clk_div2, clk_div4, clk_div8, clk_div16);
-    assign uo_out[1] = mux4(sel2, clk_div2, clk_div4, clk_div8, clk_div16);
-    assign uo_out[2] = mux4(sel3, clk_div2, clk_div4, clk_div8, clk_div16);
-    assign uo_out[3] = mux4(sel4, clk_div2, clk_div4, clk_div8, clk_div16);
+    //--------------------------------------------------
+    // 4. Output Crossbar (8 x 16:1 mux)
+    //--------------------------------------------------
+    genvar j;
 
-    // Unused outputs = 0
-    assign uo_out[7:4] = 4'b0000;
+    generate
+        for (j = 0; j < 8; j = j + 1) begin : OUTPUT_MUX
+            assign uo_out[j] = counter[ config_reg[j] ];
+        end
+    endgenerate
 
-    // Not using bidirectional IOs
+    //--------------------------------------------------
+    // Unused IOs (MANDATORY for TT)
+    //--------------------------------------------------
     assign uio_out = 8'b00000000;
     assign uio_oe  = 8'b00000000;
 
